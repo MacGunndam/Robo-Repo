@@ -25,6 +25,7 @@ THRESHOLD = 0.5
 STOP_THRESHOLD = 0.25
 HALLWAY_THRESHOLD = 0.85
 TURN_THRESHOLD = HALLWAY_THRESHOLD - 0.1
+THROTTLE = 0.65
 
 class LidarSubscriber(Node):
 
@@ -152,9 +153,10 @@ class LidarSubscriber(Node):
         #         break
 
 class CameraSubscriber(Node):
+    """ Recieves messages from camera """
     def __init__(self):
         super().__init__('camera_subscriber')
-        self.subscription = self.create_subscription(LaserScan, '/rplidar_ros/scan', self.listener_callback, 10)
+        self.subscription = self.create_subscription(CameraMsg, '/camera/scan', self.listener_callback, 10)
         
         self.subscription  # prevent unused variable warning
 
@@ -165,46 +167,50 @@ class CameraSubscriber(Node):
         return
 
 class MotorPublisher(Node):
-        def __init__(self):
-                super().__init__('motor_publisher')
-                self.wheel_publisher = self.create_publisher(
-                ServoCtrlMsg, "/ctrl_pkg/servo_msg", 10)
-                
-        def start_motor_forward(self):
-                # set the message
-                wheel_msg = ServoCtrlMsg()
-                wheel_msg.throttle = 0.65
-                wheel_msg.angle = 0.0
-                # Publish the message
-                self.wheel_publisher.publish(wheel_msg)
-                # self.wheel_publisher.publish(wheel_msg)
+    """ Publishes messages to motor for control """
+    def __init__(self):
+        super().__init__('motor_publisher')
+        self.wheel_publisher = self.create_publisher(
+        ServoCtrlMsg, "/ctrl_pkg/servo_msg", 10)
+            
+    def start_motor_forward(self):
+        # set the message
+        wheel_msg = ServoCtrlMsg()
+        wheel_msg.throttle = THROTTLE
+        wheel_msg.angle = 0.0
+        # Publish the message
+        self.wheel_publisher.publish(wheel_msg)
 
-        def start_motor_backward(self):
-                # set the message
-                wheel_msg = ServoCtrlMsg()
-                wheel_msg.throttle = 0.65
-                wheel_msg.angle = 0.0
-                # Publish the message
-                self.wheel_publisher.publish(wheel_msg)     
+    def start_motor_backward(self):
+        # set the message
+        wheel_msg = ServoCtrlMsg()
+        wheel_msg.throttle = -THROTTLE
+        wheel_msg.angle = 0.0
+        # Publish the message
+        self.wheel_publisher.publish(wheel_msg)     
 
-        def stop_motor(self):
-                # set the message
-                wheel_msg = ServoCtrlMsg()
-                wheel_msg.throttle = 0.0
-                wheel_msg.angle = 0.0
-                # Publish the message
-                self.wheel_publisher.publish(wheel_msg)
+    def stop_motor(self):
+        # set the message
+        wheel_msg = ServoCtrlMsg()
+        wheel_msg.throttle = 0.0
+        wheel_msg.angle = 0.0
+        # Publish the message
+        self.wheel_publisher.publish(wheel_msg)
 
-        def change_angle(self, angle):
-                # set the message
-                wheel_msg = ServoCtrlMsg()
-                wheel_msg.angle = angle
-                # Publish the message
-                self.wheel_publisher.publish(wheel_msg)
+    def change_angle(self, angle):
+        # set the message
+        wheel_msg = ServoCtrlMsg()
+        wheel_msg.angle = angle
+        # Publish the message
+        self.wheel_publisher.publish(wheel_msg)
 
-       
+def publish_telemetry():
+    """ Publishes telemetry to console """
+
+    return
 
 def main(args=None):
+    count = 0
     rclpy.init(args=args)
     print("Starting Program")
 
@@ -220,6 +226,9 @@ def main(args=None):
         if lidar_subscriber.stopped == 1:
             print("stop condition met")
             break
+        if count % 100:
+            count = 0
+            publish_telemetry()
 
     print("Stopping Motor")
     motor_publisher.stop_motor()
