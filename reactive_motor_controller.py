@@ -44,8 +44,8 @@ class LidarSubscriber(Node):
         ranges_length = len(ranges)
 
         ''' 
-        translating lidar readings into a compass for the robot, where N=front, E=right, S=behind, W=left
-        each lidar reading is roughly 45 degrees apart
+        translating lidar readings into a compass for the robot, where N=front, 
+        E=right, S=behind, W=left. Each lidar reading is roughly 45 degrees apart
                    lidar_N
              lidar_NW | lidar_NE
                   \   |    /
@@ -98,59 +98,6 @@ class LidarSubscriber(Node):
               self.motor_pub.change_angle(0)
               self.get_logger().info("no other states active. driving forward")
 
-
-
-
-        # couldn't figure out how to print multiple variables in one call so here we are
-        # self.get_logger().info("lidar_N: [%f]" % lidar_N)
-        # self.get_logger().info("lidar_E: [%f]" % lidar_E)
-        # self.get_logger().info("lidar_S: [%f]" % lidar_S)
-        # self.get_logger().info("lidar_W: [%f]" % lidar_W)
-
-        # self.get_logger().info("lidar_NE: [%f]" % lidar_NE)
-        # self.get_logger().info("lidar_SE: [%f]" % lidar_SE)
-        # self.get_logger().info("lidar_SW: [%f]" % lidar_SW)
-        # self.get_logger().info("lidar_NW: [%f]" % lidar_NW)
-        
-        # # tests to make sure each direction works (they do)
-        # if lidar_N <= THRESHOLD:
-        #         self.threshold_met = 1
-        #         self.get_logger().info("N Threshold Met: %0.4f" % lidar_N)
-
-        # if lidar_E <= THRESHOLD:
-        #         self.threshold_met = 1
-        #         self.get_logger().info("E Threshold Met: %0.4f" % lidar_E)
-
-        # if lidar_S <= THRESHOLD:
-        #         self.threshold_met = 1
-        #         self.get_logger().info("S Threshold Met: %0.4f" % lidar_S)
-
-        # if lidar_W <= THRESHOLD:
-        #         self.threshold_met = 1
-        #         self.get_logger().info("W Threshold Met: %0.4f" % lidar_W)
-
-
-
-        # if lidar_NE <= THRESHOLD:
-        #         self.threshold_met = 1
-        #         self.get_logger().info("NE Threshold Met: %0.4f" % lidar_NE)
-
-        # if lidar_SE <= THRESHOLD:
-        #         self.threshold_met = 1
-        #         self.get_logger().info("SE Threshold Met: %0.4f" % lidar_SE)
-
-        # if lidar_SW <= THRESHOLD:
-        #         self.threshold_met = 1
-        #         self.get_logger().info("SW Threshold Met: %0.4f" % lidar_SW)
-
-        # if lidar_NW <= THRESHOLD:
-        #         self.threshold_met = 1
-        #         self.get_logger().info("NW Threshold Met: %0.4f" % lidar_NW)
-        # for elt in ranges:
-        #     if elt < THRESHOLD and elt > 0.33:
-        #         self.stopped = 1
-        #         self.get_logger().info("Threshold Met: %0.4f" % elt)
-        #         break
 
 class CameraSubscriber(Node):
     """ Recieves messages from camera """
@@ -229,6 +176,7 @@ def main(args=None):
         if count % 100:
             count = 0
             publish_telemetry()
+        count+=1
 
     print("Stopping Motor")
     motor_publisher.stop_motor()
