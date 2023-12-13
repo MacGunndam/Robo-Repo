@@ -19,6 +19,7 @@ from rclpy.node import Node
 # Messages Used
 from deepracer_interfaces_pkg.msg import ServoCtrlMsg
 from sensor_msgs.msg import LaserScan
+from sensor_msga.msg import CameraMsg
 
 THRESHOLD = 0.5
 STOP_THRESHOLD = 0.25
@@ -27,16 +28,13 @@ TURN_THRESHOLD = HALLWAY_THRESHOLD - 0.1
 
 class LidarSubscriber(Node):
 
-    def __init__(self):
+    def __init__(self, motor_pub):
         super().__init__('lidar_subscriber')
         self.subscription = self.create_subscription(LaserScan, '/rplidar_ros/scan', self.listener_callback, 10)
         
         self.subscription  # prevent unused variable warning
         self.stopped = 0 # boolean to stop motor
-        self.motor_pub = MotorPublisher()
-        
-        print("Starting motor")
-        self.motor_pub.start_motor()
+        self.motor_pub = motor_pub
 
     def listener_callback(self, msg):
         ranges = msg.ranges
@@ -152,7 +150,19 @@ class LidarSubscriber(Node):
         #         self.stopped = 1
         #         self.get_logger().info("Threshold Met: %0.4f" % elt)
         #         break
-            
+
+class CameraSubscriber(Node):
+    def __init__(self):
+        super().__init__('camera_subscriber')
+        self.subscription = self.create_subscription(LaserScan, '/rplidar_ros/scan', self.listener_callback, 10)
+        
+        self.subscription  # prevent unused variable warning
+
+    def listener_callback(self, msg):
+        # go through the camera message and filter on red pixels
+        for pixel in msg:
+              break
+        return
 
 class MotorPublisher(Node):
         def __init__(self):
@@ -160,7 +170,7 @@ class MotorPublisher(Node):
                 self.wheel_publisher = self.create_publisher(
                 ServoCtrlMsg, "/ctrl_pkg/servo_msg", 10)
                 
-        def start_motor(self):
+        def start_motor_forward(self):
                 # set the message
                 wheel_msg = ServoCtrlMsg()
                 wheel_msg.throttle = 0.65
@@ -168,7 +178,15 @@ class MotorPublisher(Node):
                 # Publish the message
                 self.wheel_publisher.publish(wheel_msg)
                 # self.wheel_publisher.publish(wheel_msg)
-        
+
+        def start_motor_backward(self):
+                # set the message
+                wheel_msg = ServoCtrlMsg()
+                wheel_msg.throttle = 0.65
+                wheel_msg.angle = 0.0
+                # Publish the message
+                self.wheel_publisher.publish(wheel_msg)     
+
         def stop_motor(self):
                 # set the message
                 wheel_msg = ServoCtrlMsg()
@@ -188,14 +206,12 @@ class MotorPublisher(Node):
 
 def main(args=None):
     rclpy.init(args=args)
+    print("Starting Program")
 
-    lidar_subscriber = LidarSubscriber()
-#     motor_publisher = MotorPublisher()
-    
-    print("Start Program")
-    # print("Starting motor")
-    # motor_publisher.start_motor()
-
+    # Setting up out Pubs / Subs
+    motor_publisher = MotorPublisher()
+    lidar_subscriber = LidarSubscriber(motor_publisher)
+    camera_subscriber = CameraSubscriber()
 
     print("Spinning")
 
@@ -204,12 +220,9 @@ def main(args=None):
         if lidar_subscriber.stopped == 1:
             print("stop condition met")
             break
-            # lidar_subscriber.threshold_met = False
-    
-    
 
     print("Stopping Motor")
-    # motor_publisher.stop_motor()
+    motor_publisher.stop_motor()
 
 if __name__ == '__main__':
     main()
