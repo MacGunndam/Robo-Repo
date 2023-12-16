@@ -1,4 +1,4 @@
-# Team Grinch Midterm
+# Team Grinch Final
 # Motor controll and reading LIDAR data
 # Goal: Start car and stop when 20 cm from object
 # Members:
@@ -14,6 +14,7 @@ import math
 import sys
 import signal
 import subprocess
+import time
 
 # ros imports
 import rclpy
@@ -22,11 +23,35 @@ from rclpy.node import Node
 # Messages Used
 from deepracer_interfaces_pkg.msg import ServoCtrlMsg
 from sensor_msgs.msg import LaserScan
+from sensor_msgs.msg import Image
 
-THRESHOLD = 0.5
-STOP_THRESHOLD = 0.25
-HALLWAY_THRESHOLD = 0.85
-TURN_THRESHOLD = HALLWAY_THRESHOLD - 0.1
+ON = 1
+OFF = 0
+################################
+# Feature Activation
+################################
+FEATURE_STOP_SIGN = OFF
+FEATURE_TELEMETRY = ON
+FEATURE_BACKWARD_DRIVING = OFF
+
+
+################################
+# Constants
+################################
+# How long to stop at stop sign
+STOP_WAIT = 5
+
+SPEED_MULTIPLIER = 1
+ANGLE_MULTIPLIER = 1
+
+# THRESHOLD = 0.5
+STOP_THRESHOLD = 0.75 # if any lidar beam returns a distance less than this amount, STOP
+HALLWAY_THRESHOLD = 2.25 # makes sure both lidar_E and lidar_W are under this distance for hallway state
+HALLWAY_END_THRESHOLD = 3.0 # drive while staying centered until lidar_N reaches this distance
+TURN_THRESHOLD = 0.95 * HALLWAY_END_THRESHOLD # when the lidar_N see's this distance, turn right
+# the turning threshold is slightly lower than the hallway's to let the robot drive forward a bit before turning
+
+THROTTLE = 0.6 * SPEED_MULTIPLIER
 
 class LidarSubscriber(Node):
 
@@ -36,15 +61,13 @@ class LidarSubscriber(Node):
         
         self.subscription  # prevent unused variable warning
         self.stopped = 0 # boolean to stop motor
-        self.motor_pub = MotorPublisher()
-        
-        print("Starting motor")
-        self.motor_pub.start_motor()
+        self.motor_pub : MotorPublisher = motor_pub
+        self.current_state = ""
+        # lidar ranges
+        self.all_compass_scans = [0, 0, 0, 0, 0, 0, 0, 0]
 
     def listener_callback(self, msg):
         ranges = msg.ranges
-        # self.get_logger().info("Got %d range readings" % len(ranges))
-
         ranges_length = len(ranges)
 
         ''' 
@@ -84,120 +107,152 @@ class LidarSubscriber(Node):
 
         # if the robot is too close to any object, send a stop message to the motors and set stopped attribute to 1
         if dangerously_close:
-                self.motor_pub.stop_motor()
-                self.stopped = 1
-
-        # state when the robot is in the middle of a hallway with no turns coming up and walls on either side
-        # in this case, try and keep the robot centered by making small turns depending on proximity to walls
-        elif lidar_N >= HALLWAY_THRESHOLD and math.isfinite(lidar_E) and math.isfinite(lidar_W):
-                # if the robot is closer to right wall, turn slightly left
-                if lidar_E < lidar_W:
-                        self.motor_pub.change_angle(-0.05)
-                        self.get_logger().info("turning slightly left")
-                # if the robot is closer to left wall, turn slightly right
-                elif lidar_E > lidar_W:
-                        self.motor_pub.change_angle(0.05)
-                        self.get_logger().info("turning slightly right")
+            # self.get_logger().info("WARNING: Dangerously close!")
+            self.current_state = "DANGER!"
+            self.motor_pub.stop_motor()
+            # self.stopped = 1
 
         # state when the robot is approaching a wall directly in front of it
         # in this case, turn the robot right until lidar_N goes back to state 1 (hopefully)
         # this doesn't check that the right is another hallway
         # if going down a corridor with no turns, then this behavior will cause it to u-turn or stop depending on its speed
-        elif lidar_N <= TURN_THRESHOLD and lidar_NW <= TURN_THRESHOLD + 0.15:
-                self.motor_pub.change_angle(0.15)
-                self.get_logger().info("found turn condition. turning right")
+        elif lidar_N <= TURN_THRESHOLD and (lidar_NW <= 1.1 * TURN_THRESHOLD or lidar_NE <= 1.1 * TURN_THRESHOLD) and lidar_E >= HALLWAY_THRESHOLD:
+            self.motor_pub.current_throttle = 0.8 * THROTTLE
+            self.motor_pub.set_angle(-0.6)
+            self.get_logger().info("found turn condition. turning right")
+            self.current_state = "Right Turn"
+
+        # state when the robot is in the middle of a hallway with no turns coming up and walls on either side
+        # in this case, try and keep the robot centered by making small turns depending on proximity to walls
+        elif lidar_N >= HALLWAY_END_THRESHOLD and lidar_E <= HALLWAY_THRESHOLD and lidar_W <= HALLWAY_THRESHOLD:
+            self.motor_pub.current_throttle = THROTTLE
+            # if the robot is closer to right wall, turn slightly left
+            if lidar_E < lidar_W:
+                # publish message
+                self.motor_pub.set_angle(0.2 * ANGLE_MULTIPLIER)
+                # self.get_logger().info("turning slightly left")
+                self.current_state = "Slight Left"
+            # if the robot is closer to left wall, turn slightly right
+            elif lidar_E > lidar_W:
+                # publish message
+                self.motor_pub.set_angle(-0.2 * ANGLE_MULTIPLIER)
+                # self.get_logger().info("turning slightly right")
+                self.current_state = "Slight Right"
 
         # if none of the other states are active, simply drive forward
         else:
-              self.motor_pub.change_angle(0)
-              self.get_logger().info("no other states active. driving forward")
+            self.motor_pub.start_motor_forward()
+            # self.get_logger().info("no other states active. driving forward")
+            self.current_state = "Forward"
 
-
-
-
-        # couldn't figure out how to print multiple variables in one call so here we are
-        # self.get_logger().info("lidar_N: [%f]" % lidar_N)
-        # self.get_logger().info("lidar_E: [%f]" % lidar_E)
-        # self.get_logger().info("lidar_S: [%f]" % lidar_S)
-        # self.get_logger().info("lidar_W: [%f]" % lidar_W)
-
-        # self.get_logger().info("lidar_NE: [%f]" % lidar_NE)
-        # self.get_logger().info("lidar_SE: [%f]" % lidar_SE)
-        # self.get_logger().info("lidar_SW: [%f]" % lidar_SW)
-        # self.get_logger().info("lidar_NW: [%f]" % lidar_NW)
+class CameraSubscriber(Node):
+    """ Recieves messages from camera """
+    def __init__(self, motor_publisher):
+        super().__init__('camera_subscriber')
+        self.subscription = self.create_subscription(Image, '/camera_pkg/display_mjpeg', self.listener_callback, 10)
         
-        # # tests to make sure each direction works (they do)
-        # if lidar_N <= THRESHOLD:
-        #         self.threshold_met = 1
-        #         self.get_logger().info("N Threshold Met: %0.4f" % lidar_N)
+        self.subscription  # prevent unused variable warning
+        self.num_color = 0
+        self.motor : MotorPublisher = motor_publisher
+        self.current_state = "None"
 
-        # if lidar_E <= THRESHOLD:
-        #         self.threshold_met = 1
-        #         self.get_logger().info("E Threshold Met: %0.4f" % lidar_E)
-
-        # if lidar_S <= THRESHOLD:
-        #         self.threshold_met = 1
-        #         self.get_logger().info("S Threshold Met: %0.4f" % lidar_S)
-
-        # if lidar_W <= THRESHOLD:
-        #         self.threshold_met = 1
-        #         self.get_logger().info("W Threshold Met: %0.4f" % lidar_W)
-
-
-
-        # if lidar_NE <= THRESHOLD:
-        #         self.threshold_met = 1
-        #         self.get_logger().info("NE Threshold Met: %0.4f" % lidar_NE)
-
-        # if lidar_SE <= THRESHOLD:
-        #         self.threshold_met = 1
-        #         self.get_logger().info("SE Threshold Met: %0.4f" % lidar_SE)
-
-        # if lidar_SW <= THRESHOLD:
-        #         self.threshold_met = 1
-        #         self.get_logger().info("SW Threshold Met: %0.4f" % lidar_SW)
-
-        # if lidar_NW <= THRESHOLD:
-        #         self.threshold_met = 1
-        #         self.get_logger().info("NW Threshold Met: %0.4f" % lidar_NW)
-        # for elt in ranges:
-        #     if elt < THRESHOLD and elt > 0.33:
-        #         self.stopped = 1
-        #         self.get_logger().info("Threshold Met: %0.4f" % elt)
-        #         break
-            
+    def listener_callback(self, msg : Image):
+        if FEATURE_STOP_SIGN == ON:
+            # go through the camera message and filter on red pixels
+            # data is [b, g, r,   b, g, r,   b, g, r, ...]
+            BLUE = 0
+            GREEN = 1
+            RED = 2
+            # slice is [start:end:step], so doing [0::3] will give us every 3rd element
+            # green_data = msg.data[GREEN::3]
+            self.num_color = 0
+            i = 0
+            while i < len(msg.data):
+                # get b, g, r values
+                b = msg.data[i]
+                g = msg.data[i+1]
+                r = msg.data[i+2]
+                # method to recognise green
+                if (g / (b+r+1)) > 1:
+                    self.num_color+=1
+                    # print("b %d, g %d, r%d " % (b, g, r))
+                i+=3
+            if self.num_color > 2000:
+                self.get_logger().info("met threshold for red values %d " % self.num_color)
+                self.motor.stop_motor()
+                self.current_state = "Stopped"
+                print("Waiting... ")
+                for t in range(STOP_WAIT):
+                    print("%d..." % (STOP_WAIT - t))
+                    time.sleep(1)
+                print("Done Waiting")
+                self.motor.start_motor_forward()
+        return
 
 class MotorPublisher(Node):
-        def __init__(self):
-                super().__init__('motor_publisher')
-                self.wheel_publisher = self.create_publisher(
-                ServoCtrlMsg, "/ctrl_pkg/servo_msg", 10)
-                
-        def start_motor(self):
-                # set the message
-                wheel_msg = ServoCtrlMsg()
-                wheel_msg.throttle = 0.65
-                wheel_msg.angle = 0.0
-                # Publish the message
-                self.wheel_publisher.publish(wheel_msg)
-                # self.wheel_publisher.publish(wheel_msg)
-        
-        def stop_motor(self):
-                # set the message
-                wheel_msg = ServoCtrlMsg()
-                wheel_msg.throttle = 0.0
-                wheel_msg.angle = 0.0
-                # Publish the message
-                self.wheel_publisher.publish(wheel_msg)
+    """ Publishes messages to motor for control """
+    def __init__(self):
+        super().__init__('motor_publisher')
+        self.wheel_publisher = self.create_publisher(ServoCtrlMsg, "/ctrl_pkg/servo_msg", 10)
+        self.current_throttle : float = 0.0
+        self.current_angle : float = 0.0
 
-        def change_angle(self, angle):
-                # set the message
-                wheel_msg = ServoCtrlMsg()
-                wheel_msg.angle = angle
-                # Publish the message
-                self.wheel_publisher.publish(wheel_msg)
+    def publish_message(self):
+        # set the message
+        wheel_msg = ServoCtrlMsg()
+        wheel_msg.throttle = self.current_throttle
+        wheel_msg.angle = self.current_angle
+        # Publish the message
+        self.wheel_publisher.publish(wheel_msg)
 
-       
+    def start_motor_forward(self, throttle=THROTTLE):
+        # set shared variables
+        self.current_throttle = throttle
+        self.publish_message()
+
+    def start_motor_backward(self):
+        # set shared variables
+        self.current_throttle = -THROTTLE
+        self.publish_message()   
+
+    def stop_motor(self):
+        # set shared variables
+        self.current_throttle = 0.0
+        self.current_angle = 0.0
+        self.publish_message()
+
+    def change_angle(self, angle):
+        # set shared angle
+        self.current_angle = self.current_angle + angle
+        self.publish_message()  
+
+    def set_angle(self, angle):
+        # set shared angle
+        self.current_angle = angle
+        self.publish_message()      
+
+
+def publish_telemetry(motor : MotorPublisher, lidar : LidarSubscriber, camera : CameraSubscriber):
+    """ Publishes telemetry to console """
+    motor_status = "{0:^44}".format("MOTOR STATUS") + "\n"
+    motor_status += "|{0:^20}|{1:^10}|{2:^10}|".format("STATE", "THROTTLE", "ANGLE") + "\n"
+    motor_status += "|{0:^20}|{1:^10.1f}|{2:^10.2f}|".format(lidar.current_state, motor.current_throttle, motor.current_angle) + "\n"
+    motor_status += "-{0:-^42}-".format("")
+    print(motor_status)
+
+    lidar_status = "{0:^44}".format("LIDAR") + "\n"
+    lidar_status += "|{0:^14}|{1:^14}|{2:^14}|".format("NW: %0.2f" % lidar.all_compass_scans[7], "N: %0.2f" % lidar.all_compass_scans[0], "NE: %0.2f" % lidar.all_compass_scans[1]) + "\n"
+    lidar_status += "|{0:^14}|{1:^14}|{2:^14}|".format("W: %0.2f" % lidar.all_compass_scans[6], "ROBOT", "E: %0.2f" % lidar.all_compass_scans[2]) + "\n"
+    lidar_status += "|{0:^14}|{1:^14}|{2:^14}|".format("SW: %0.2f" % lidar.all_compass_scans[5], "S: %0.2f" % lidar.all_compass_scans[4], "SE: %0.2f" % lidar.all_compass_scans[3]) + "\n"
+    lidar_status += "-{0:-^44}-".format("")
+    print(lidar_status)
+
+    if FEATURE_STOP_SIGN:
+        camera_status = "{0:^44}".format("CAMERA") + "\n"
+        camera_status += "|{0:^14}|{1:^14}|".format("STATE", camera.current_state) + "\n"
+        print(camera_status)
+
+    return
 
 def main(args=None):
     count = 0
@@ -207,18 +262,26 @@ def main(args=None):
     # Setting up out Pubs / Subs
     motor_publisher = MotorPublisher()
     lidar_subscriber = LidarSubscriber(motor_publisher)
-    # camera_subscriber = CameraSubscriber()
+    camera_subscriber = None
+    if FEATURE_STOP_SIGN == ON:
+        camera_subscriber = CameraSubscriber(motor_publisher)
 
     print("Spinning")
+    motor_publisher.start_motor_forward(1.0)
 
     while(1):
         rclpy.spin_once(lidar_subscriber)
         if lidar_subscriber.stopped == 1:
             print("stop condition met")
             break
-            # lidar_subscriber.threshold_met = False
-    
-    
+        if count % 5 == 0:
+            if FEATURE_TELEMETRY == ON:
+                publish_telemetry(motor_publisher, lidar_subscriber, camera_subscriber)
+        if FEATURE_STOP_SIGN == ON and count % 50 == 0:
+            count = 0
+            rclpy.spin_once(camera_subscriber)
+
+        count+=1
 
     print("Stopping Motor")
     motor_publisher.stop_motor()
