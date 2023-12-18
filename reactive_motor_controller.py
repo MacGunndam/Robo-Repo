@@ -15,6 +15,7 @@ import sys
 import signal
 import subprocess
 import time
+import psutil
 
 # ros imports
 import rclpy
@@ -22,8 +23,7 @@ from rclpy.node import Node
 
 # Messages Used
 from deepracer_interfaces_pkg.msg import ServoCtrlMsg
-from sensor_msgs.msg import LaserScan
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import LaserScan, Image
 
 ON = 1
 OFF = 0
@@ -32,6 +32,7 @@ OFF = 0
 ################################
 FEATURE_STOP_SIGN = OFF
 FEATURE_TELEMETRY = ON
+FEATURE_HW_MONITOR = OFF
 FEATURE_BACKWARD_DRIVING = OFF
 
 
@@ -51,11 +52,11 @@ HALLWAY_END_THRESHOLD = 3.0 # drive while staying centered until lidar_N reaches
 TURN_THRESHOLD = 0.95 * HALLWAY_END_THRESHOLD # when the lidar_N see's this distance, turn right
 # the turning threshold is slightly lower than the hallway's to let the robot drive forward a bit before turning
 
-THROTTLE = 0.6 * SPEED_MULTIPLIER
+THROTTLE = 0.65 * SPEED_MULTIPLIER
 
 class LidarSubscriber(Node):
 
-    def __init__(self, motor_pub):
+    def __init__(self, motor_pub, reverse_driving):
         super().__init__('lidar_subscriber')
         self.subscription = self.create_subscription(LaserScan, '/rplidar_ros/scan', self.listener_callback, 10)
         
@@ -63,6 +64,7 @@ class LidarSubscriber(Node):
         self.stopped = 0 # boolean to stop motor
         self.motor_pub : MotorPublisher = motor_pub
         self.current_state = ""
+        self.reverse_drive = reverse_driving
         # lidar ranges
         self.all_compass_scans = [0, 0, 0, 0, 0, 0, 0, 0]
 
@@ -112,38 +114,74 @@ class LidarSubscriber(Node):
             self.motor_pub.stop_motor()
             # self.stopped = 1
 
-        # state when the robot is approaching a wall directly in front of it
-        # in this case, turn the robot right until lidar_N goes back to state 1 (hopefully)
-        # this doesn't check that the right is another hallway
-        # if going down a corridor with no turns, then this behavior will cause it to u-turn or stop depending on its speed
-        elif lidar_N <= TURN_THRESHOLD and (lidar_NW <= 1.1 * TURN_THRESHOLD or lidar_NE <= 1.1 * TURN_THRESHOLD) and lidar_E >= HALLWAY_THRESHOLD:
-            self.motor_pub.current_throttle = 0.8 * THROTTLE
-            self.motor_pub.set_angle(-0.6)
-            self.get_logger().info("found turn condition. turning right")
-            self.current_state = "Right Turn"
+        # normal driving / correcting
+        if self.reverse_drive == 0:
+            # state when the robot is approaching a wall directly in front of it
+            # in this case, turn the robot right until lidar_N goes back to state 1 (hopefully)
+            # this doesn't check that the right is another hallway
+            # if going down a corridor with no turns, then this behavior will cause it to u-turn or stop depending on its speed
+            if lidar_N <= TURN_THRESHOLD and ((lidar_NE > lidar_N) or (lidar_E > lidar_N)):
+                self.motor_pub.current_throttle = 0.8 * THROTTLE
+                self.motor_pub.set_angle(-0.6)
+                self.get_logger().info("found turn condition. turning right")
+                self.current_state = "Right Turn"
 
-        # state when the robot is in the middle of a hallway with no turns coming up and walls on either side
-        # in this case, try and keep the robot centered by making small turns depending on proximity to walls
-        elif lidar_N >= HALLWAY_END_THRESHOLD and lidar_E <= HALLWAY_THRESHOLD and lidar_W <= HALLWAY_THRESHOLD:
-            self.motor_pub.current_throttle = THROTTLE
-            # if the robot is closer to right wall, turn slightly left
-            if lidar_E < lidar_W:
-                # publish message
-                self.motor_pub.set_angle(0.2 * ANGLE_MULTIPLIER)
-                # self.get_logger().info("turning slightly left")
-                self.current_state = "Slight Left"
-            # if the robot is closer to left wall, turn slightly right
-            elif lidar_E > lidar_W:
-                # publish message
-                self.motor_pub.set_angle(-0.2 * ANGLE_MULTIPLIER)
-                # self.get_logger().info("turning slightly right")
-                self.current_state = "Slight Right"
+            # state when the robot is in the middle of a hallway with no turns coming up and walls on either side
+            # in this case, try and keep the robot centered by making small turns depending on proximity to walls
+            elif lidar_N >= HALLWAY_END_THRESHOLD and lidar_E <= HALLWAY_THRESHOLD and lidar_W <= HALLWAY_THRESHOLD:
+                self.motor_pub.current_throttle = THROTTLE
+                # if the robot is closer to right wall, turn slightly left
+                if lidar_E < lidar_W:
+                    # publish message
+                    self.motor_pub.set_angle(0.2 * ANGLE_MULTIPLIER)
+                    # self.get_logger().info("turning slightly left")
+                    self.current_state = "Slight Left"
+                # if the robot is closer to left wall, turn slightly right
+                elif lidar_E > lidar_W:
+                    # publish message
+                    self.motor_pub.set_angle(-0.2 * ANGLE_MULTIPLIER)
+                    # self.get_logger().info("turning slightly right")
+                    self.current_state = "Slight Right"
 
-        # if none of the other states are active, simply drive forward
+            # if none of the other states are active, simply drive forward
+            else:
+                self.motor_pub.start_motor_forward()
+                # self.get_logger().info("no other states active. driving forward")
+                self.current_state = "Forward"
+        # reverse driving is the same as forward, but with different lidar beams
         else:
-            self.motor_pub.start_motor_forward()
-            # self.get_logger().info("no other states active. driving forward")
-            self.current_state = "Forward"
+            # state when the robot is approaching a wall directly in front of it
+            # in this case, turn the robot right until lidar_N goes back to state 1 (hopefully)
+            # this doesn't check that the right is another hallway
+            # if going down a corridor with no turns, then this behavior will cause it to u-turn or stop depending on its speed
+            if lidar_S <= TURN_THRESHOLD and ((lidar_SW > lidar_S) or (lidar_W > lidar_S)):
+                self.motor_pub.current_throttle = 0.8 * -THROTTLE
+                self.motor_pub.set_angle(0.6)
+                self.get_logger().info("found turn condition. turning right")
+                self.current_state = "Right Turn"
+
+            # state when the robot is in the middle of a hallway with no turns coming up and walls on either side
+            # in this case, try and keep the robot centered by making small turns depending on proximity to walls
+            elif lidar_S >= HALLWAY_END_THRESHOLD and lidar_E <= HALLWAY_THRESHOLD and lidar_W <= HALLWAY_THRESHOLD:
+                self.motor_pub.current_throttle = -THROTTLE
+                # if the robot is closer to right wall, turn slightly left
+                if lidar_E < lidar_W:
+                    # publish message
+                    self.motor_pub.set_angle(-0.2 * ANGLE_MULTIPLIER)
+                    # self.get_logger().info("turning slightly left")
+                    self.current_state = "Slight Left"
+                # if the robot is closer to left wall, turn slightly right
+                elif lidar_E > lidar_W:
+                    # publish message
+                    self.motor_pub.set_angle(0.2 * ANGLE_MULTIPLIER)
+                    # self.get_logger().info("turning slightly right")
+                    self.current_state = "Slight Right"
+
+            # if none of the other states are active, simply drive forward
+            else:
+                self.motor_pub.start_motor_forward()
+                # self.get_logger().info("no other states active. driving forward")
+                self.current_state = "Forward"
 
 class CameraSubscriber(Node):
     """ Recieves messages from camera """
@@ -181,11 +219,12 @@ class CameraSubscriber(Node):
                 self.get_logger().info("met threshold for red values %d " % self.num_color)
                 self.motor.stop_motor()
                 self.current_state = "Stopped"
-                print("Waiting... ")
+                self.get_logger().info("WARNING: Dangerously close!")
+                self.get_logger().info("Waiting... ")
                 for t in range(STOP_WAIT):
-                    print("%d..." % (STOP_WAIT - t))
+                    self.get_logger().info("%d..." % (STOP_WAIT - t))
                     time.sleep(1)
-                print("Done Waiting")
+                self.get_logger().info("Done Waiting")
                 self.motor.start_motor_forward()
         return
 
@@ -208,6 +247,7 @@ class MotorPublisher(Node):
     def start_motor_forward(self, throttle=THROTTLE):
         # set shared variables
         self.current_throttle = throttle
+        self.current_angle = 0.0
         self.publish_message()
 
     def start_motor_backward(self):
@@ -234,23 +274,33 @@ class MotorPublisher(Node):
 
 def publish_telemetry(motor : MotorPublisher, lidar : LidarSubscriber, camera : CameraSubscriber):
     """ Publishes telemetry to console """
-    motor_status = "{0:^44}".format("MOTOR STATUS") + "\n"
-    motor_status += "|{0:^20}|{1:^10}|{2:^10}|".format("STATE", "THROTTLE", "ANGLE") + "\n"
-    motor_status += "|{0:^20}|{1:^10.1f}|{2:^10.2f}|".format(lidar.current_state, motor.current_throttle, motor.current_angle) + "\n"
-    motor_status += "-{0:-^42}-".format("")
+    motor_status = "|{0:-^44}|".format("") + "\n"
+    motor_status += "|{0:^44}|".format("MOTOR STATUS") + "\n"
+    motor_status += "|{0:^20}|{1:^11}|{2:^11}|".format("STATE", "THROTTLE", "ANGLE") + "\n"
+    motor_status += "|{0:^20}|{1:^11.1f}|{2:^11.2f}|".format(lidar.current_state, motor.current_throttle, motor.current_angle) + "\n"
+    motor_status += "|{0:-^44}|".format("")
     print(motor_status)
 
-    lidar_status = "{0:^44}".format("LIDAR") + "\n"
+    lidar_status = "|{0:^44}|".format("LIDAR") + "\n"
     lidar_status += "|{0:^14}|{1:^14}|{2:^14}|".format("NW: %0.2f" % lidar.all_compass_scans[7], "N: %0.2f" % lidar.all_compass_scans[0], "NE: %0.2f" % lidar.all_compass_scans[1]) + "\n"
     lidar_status += "|{0:^14}|{1:^14}|{2:^14}|".format("W: %0.2f" % lidar.all_compass_scans[6], "ROBOT", "E: %0.2f" % lidar.all_compass_scans[2]) + "\n"
     lidar_status += "|{0:^14}|{1:^14}|{2:^14}|".format("SW: %0.2f" % lidar.all_compass_scans[5], "S: %0.2f" % lidar.all_compass_scans[4], "SE: %0.2f" % lidar.all_compass_scans[3]) + "\n"
-    lidar_status += "-{0:-^44}-".format("")
+    lidar_status += "|{0:-^44}|".format("")
     print(lidar_status)
 
-    if FEATURE_STOP_SIGN:
-        camera_status = "{0:^44}".format("CAMERA") + "\n"
+    if FEATURE_STOP_SIGN == 1:
+        camera_status = "|{0:^44}|".format("CAMERA") + "\n"
         camera_status += "|{0:^14}|{1:^14}|".format("STATE", camera.current_state) + "\n"
+        camera_status += "|{0:-^44}|".format("")
         print(camera_status)
+
+    if FEATURE_HW_MONITOR == 1:
+        hw_status = "|{0:^44}|".format("HARDWARE") + "\n"
+        hw_status += "|{0:^14}|{1:^14}|{2:^14}|".format("CPU : %0.2f" % psutil.cpu_percent(), 
+                                                                "RAM : %0.2f" % psutil.virtual_memory().percent,
+                                                                "FREE : %0.02f" % (100 - psutil.virtual_memory().percent)) + "\n"
+        hw_status += "|{0:-^44}|".format("") + "\n\n"
+        print(hw_status)
 
     return
 
@@ -261,7 +311,7 @@ def main(args=None):
 
     # Setting up out Pubs / Subs
     motor_publisher = MotorPublisher()
-    lidar_subscriber = LidarSubscriber(motor_publisher)
+    lidar_subscriber = LidarSubscriber(motor_publisher, FEATURE_BACKWARD_DRIVING)
     camera_subscriber = None
     if FEATURE_STOP_SIGN == ON:
         camera_subscriber = CameraSubscriber(motor_publisher)
